@@ -9,6 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
 
+import shutil
+import tempfile
+import secrets
+from click.testing import CliRunner
+
 import click
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -677,6 +682,275 @@ def cmd_masters(cfg: Cfg):
 
 """
     )
+
+
+@cli.command("pbcopy")
+@click.argument("name", type=str)
+@click.option(
+    "--clear-after",
+    type=int,
+    default=0,
+    help="Clear clipboard after N seconds.",
+)
+@click.pass_obj
+def cmd_pbcopy(cfg: Cfg, name: str, clear_after: int) -> None:
+    """
+    Decrypt secret NAME and copy it to system clipboard.
+    Does NOT print the secret.
+    """
+    ensure_setup(cfg)
+
+    if not valid_name(name):
+        die("Invalid name (use A-Z0-9_)")
+
+    p = secret_path(cfg, name)
+    if not p.exists():
+        die(f"Secret not found: {name}")
+
+    key = load_aes_key(cfg.secrets_dir)
+    cipher_blob, _desc, _is_json = unwrap_enc(p.read_bytes())
+    secret = decrypt_bytes(key, cipher_blob).decode("utf-8")
+
+    try:
+        import pyperclip
+    except ImportError:
+        die("pyperclip not installed. Run: pip install pyperclip")
+
+    try:
+        pyperclip.copy(secret)
+    except Exception as e:
+        die(f"Failed to copy to clipboard: {e}")
+
+    # Optional auto-clear
+    if clear_after > 0:
+        import threading
+        import time
+
+        def clear():
+            time.sleep(clear_after)
+            try:
+                # clear only if clipboard still contains our secret
+                if pyperclip.paste() == secret:
+                    pyperclip.copy("")
+            except Exception:
+                pass
+
+        threading.Thread(target=clear, daemon=True).start()
+
+
+@cli.command("mv")
+@click.argument("old", type=str)
+@click.argument("new", type=str)
+@click.option("--force", "-f", is_flag=True, help="Overwrite destination if it exists.")
+@click.pass_obj
+def cmd_mv(cfg: Cfg, old: str, new: str, force: bool) -> None:
+    """Rename secret OLD -> NEW (moves OLD.enc to NEW.enc)."""
+    ensure_setup(cfg)
+
+    if not valid_name(old) or not valid_name(new):
+        die("Invalid name (use A-Z0-9_)")
+
+    if old == new:
+        click.echo("Nothing to do (same name).")
+        return
+
+    src = secret_path(cfg, old)
+    dst = secret_path(cfg, new)
+
+    if not src.exists():
+        die(f"Secret not found: {old}")
+
+    if dst.exists():
+        if not force:
+            if not click.confirm(f"⚠️  {new} exists. Overwrite?", default=False):
+                return
+
+    # Atomic rename (same filesystem)
+    src.replace(dst)
+    ensure_600(dst)
+
+    click.echo(f"✅ Renamed {old} -> {new}")
+
+
+def init_temp_store(secrets_dir: Path) -> None:
+    """
+    Create a fully standalone temp secrets store:
+      - master.key via age-keygen (non-SE, non-interactive)
+      - MASTER.age wrapping a random AES-256 key for that master.key recipient
+    """
+    secrets_dir.mkdir(parents=True, exist_ok=True)
+
+    identity_file = secrets_dir / MASTER_IDENTITY
+    master_age_file = secrets_dir / MASTER_AGE
+
+    # 1) Generate age identity (software) for tests
+    #    We avoid age-plugin-se here to keep tests non-interactive.
+    if not identity_file.exists():
+        run_checked(["age-keygen", "-o", str(identity_file)])
+        ensure_600(identity_file)
+
+    recipient = age_recipient_from_identity(identity_file)
+
+    # 2) Create random AES-256 key and wrap it into MASTER.age for this recipient
+    aes_key = os.urandom(32)
+    master_plain_b64 = base64.b64encode(aes_key) + b"\n"
+    master_age_bytes = age_encrypt_to_recipient(recipient, master_plain_b64)
+
+    master_age_file.write_bytes(master_age_bytes)
+    ensure_600(master_age_file)
+
+@cli.command("test")
+@click.option("--keep-temp", is_flag=True, help="Keep temp test directories and print their paths.")
+@click.option("--verbose", "-v", is_flag=True, help="Print per-step details (no secret contents).")
+@click.pass_obj
+def cmd_test(cfg: Cfg, keep_temp: bool, verbose: bool) -> None:
+    """
+    Self-test: runs commands against a BRAND NEW temp store.
+    Does not touch your real secrets.
+    """
+    runner = CliRunner(mix_stderr=True)
+
+    t1_td = tempfile.TemporaryDirectory(prefix="se-mgr-test-")
+    t2_td = tempfile.TemporaryDirectory(prefix="se-mgr-test-apply-")
+    t1 = Path(t1_td.name)
+    t2 = Path(t2_td.name)
+
+    def invoke_in_dir(secrets_dir: Path, args: list[str], input_text: str = ""):
+        full_args = ["--secrets-dir", str(secrets_dir)] + args
+        return runner.invoke(cli, full_args, input=input_text, catch_exceptions=False)
+
+    try:
+        # Create fresh stores
+        init_temp_store(t1)
+        init_temp_store(t2)  # separate one for dump-apply verification
+
+        suffix = secrets.token_hex(4).upper()
+        a = f"TEST_A_{suffix}"
+        b = f"TEST_B_{suffix}"
+        val = f"v_{secrets.token_hex(16)}"  # never printed
+
+        steps: list[tuple[str, callable]] = []
+
+        def step_list_empty_or_ok():
+            r = invoke_in_dir(t1, ["list"])
+            if r.exit_code != 0:
+                raise RuntimeError(r.output)
+
+        def step_set_get():
+            r_set = invoke_in_dir(t1, ["set", a, "--desc", "self-test", "--no-preserve-meta"],
+                                  input_text=f"{val}\n{val}\n")
+            if r_set.exit_code != 0:
+                raise RuntimeError(f"set failed:\n{r_set.output}")
+
+            r_get = invoke_in_dir(t1, ["get", a])
+            if r_get.exit_code != 0:
+                raise RuntimeError(f"get failed:\n{r_get.output}")
+            if r_get.output != val:
+                raise RuntimeError("get output mismatch (expected exact secret value).")
+
+        def step_mv_and_verify():
+            # rename A -> B
+            r_mv = invoke_in_dir(t1, ["mv", a, b], input_text="y\n")  # y only matters if dst exists (usually no)
+            if r_mv.exit_code != 0:
+                raise RuntimeError(f"mv failed:\n{r_mv.output}")
+
+            # old name should fail
+            r_get_old = invoke_in_dir(t1, ["get", a])
+            if r_get_old.exit_code == 0:
+                raise RuntimeError("get(old) succeeded after mv (expected failure).")
+
+            # new name should succeed with same value
+            r_get_new = invoke_in_dir(t1, ["get", b])
+            if r_get_new.exit_code != 0:
+                raise RuntimeError(f"get(new) failed:\n{r_get_new.output}")
+            if r_get_new.output != val:
+                raise RuntimeError("get(new) output mismatch after mv.")
+
+        def step_comment_and_export():
+            r_cmt = invoke_in_dir(t1, ["comment", b, "--stdin"], input_text="line1\nline2\n")
+            if r_cmt.exit_code != 0:
+                raise RuntimeError(f"comment failed:\n{r_cmt.output}")
+
+            r_exp = invoke_in_dir(t1, ["export"])
+            if r_exp.exit_code != 0:
+                raise RuntimeError(f"export failed:\n{r_exp.output}")
+            if f"export {b}=" not in r_exp.output:
+                raise RuntimeError("export did not include the test secret name.")
+
+        def step_dump_apply_pair():
+            # dump from t1
+            r_dump = invoke_in_dir(t1, ["dump"])
+            if r_dump.exit_code != 0:
+                raise RuntimeError(f"dump failed:\n{r_dump.output}")
+            dump_json = r_dump.output
+            if not dump_json.strip().startswith("{"):
+                raise RuntimeError("dump did not produce JSON.")
+
+            # apply to t2 (already has its own master.key)
+            r_apply = invoke_in_dir(t2, ["dump-apply", "--yes"], input_text=dump_json)
+            if r_apply.exit_code != 0:
+                raise RuntimeError(f"dump-apply failed:\n{r_apply.output}")
+
+            # verify secret in t2
+            r_get2 = invoke_in_dir(t2, ["get", b])
+            if r_get2.exit_code != 0:
+                raise RuntimeError(f"get(after dump-apply) failed:\n{r_get2.output}")
+            if r_get2.output != val:
+                raise RuntimeError("get(after dump-apply) output mismatch.")
+
+        def step_rotate_then_get():
+            r_rot = invoke_in_dir(t1, ["rotate", "--yes"])
+            if r_rot.exit_code != 0:
+                raise RuntimeError(f"rotate failed:\n{r_rot.output}")
+
+            r_get = invoke_in_dir(t1, ["get", b])
+            if r_get.exit_code != 0:
+                raise RuntimeError(f"get(after rotate) failed:\n{r_get.output}")
+            if r_get.output != val:
+                raise RuntimeError("get(after rotate) output mismatch.")
+
+        def step_rm():
+            r_rm = invoke_in_dir(t1, ["rm", b], input_text="y\n")
+            if r_rm.exit_code != 0:
+                raise RuntimeError(f"rm failed:\n{r_rm.output}")
+
+            r_get = invoke_in_dir(t1, ["get", b])
+            if r_get.exit_code == 0:
+                raise RuntimeError("get succeeded after rm (expected failure).")
+
+        steps += [
+            ("list", step_list_empty_or_ok),
+            ("set/get", step_set_get),
+            ("mv + verify", step_mv_and_verify),
+            ("comment/export", step_comment_and_export),
+            ("dump -> dump-apply (paired)", step_dump_apply_pair),
+            ("rotate -> get", step_rotate_then_get),
+            ("rm -> verify missing", step_rm),
+        ]
+
+        total = len(steps)
+        click.echo(f"🔎 Running self-test in temp stores (real secrets untouched).")
+
+        for i, (name, fn) in enumerate(steps, start=1):
+            click.echo(f"[{i}/{total}] Testing: {name} ... ", nl=False)
+            try:
+                fn()
+                click.echo("OK")
+            except Exception as e:
+                click.echo("FAILED")
+                click.echo(f"   Error: {e}")
+                if keep_temp:
+                    click.echo(f"   Temp dirs kept:\n     t1={t1}\n     t2={t2}")
+                raise click.ClickException("Self-test failed.") from e
+
+        click.echo("✅ Self-test passed.")
+        if keep_temp:
+            click.echo(f"Temp dirs kept:\n  t1={t1}\n  t2={t2}")
+
+    finally:
+        if not keep_temp:
+            t1_td.cleanup()
+            t2_td.cleanup()
 
 
 if __name__ == "__main__":
