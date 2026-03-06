@@ -699,39 +699,35 @@ def cmd_dump_apply(cfg: Cfg, yes: bool) -> None:
 
 @cli.command("master")
 @click.pass_obj
-def cmd_masters(cfg: Cfg):
-    completed = False
-    identity_file = None
-    master_age_file = None
-    try:
-        identity_file = cfg.identity_file
-        if identity_file and os.path.exists(identity_file):
-            completed = True
-    except:
-        completed = False
-    finally:
-        click.echo(f"""
-    1. To generate SE master:
-     - Use age SE plugin to generate: age-plugin-se keygen -o {identity_file}
-       completed: {completed}
-"""
-    )
-    completed = False
-    try:
-        master_age_file = cfg.master_age_file
-        if master_age_file and os.path.exists(master_age_file):
-            completed = True
-    except:
-        completed = False
-    finally:
-        click.echo(f"""
-    2. To create shared master key:
-     - create {MASTER_AGE}: `age -r {age_recipient_from_identity(identity_file)} -o {master_age_file} <(openssl rand -base64 32)`
-       completed: {completed}
-"""
-)
-    if completed:
-        click.echo(f"     Current shared master: {base64.b64encode(load_aes_key(cfg.secrets_dir)).decode()}")
+def cmd_masters(cfg: Cfg) -> None:
+    identity_file = cfg.identity_file
+    master_age_file = cfg.master_age_file
+
+    identity_exists = identity_file.exists()
+    master_exists = master_age_file.exists()
+
+    click.echo("1. To generate SE master:")
+    click.echo(f" - Use age SE plugin to generate: age-plugin-se keygen -o {identity_file}")
+    click.echo(f"   completed: {identity_exists}")
+    click.echo("")
+
+    recipient_hint = "<recipient unavailable: generate master.key first>"
+    if identity_exists:
+        try:
+            recipient_hint = age_recipient_from_identity(identity_file)
+        except click.ClickException:
+            recipient_hint = "<recipient unavailable: failed to parse master.key>"
+
+    click.echo("2. To create shared master key:")
+    click.echo(f" - create {MASTER_AGE}: `age -r {recipient_hint} -o {master_age_file} <(openssl rand -base64 32)`")
+    click.echo(f"   completed: {master_exists}")
+
+    if master_exists:
+        try:
+            current_shared_master = base64.b64encode(load_aes_key(cfg.secrets_dir)).decode("ascii")
+            click.echo(f"   Current shared master: {current_shared_master}")
+        except click.ClickException as e:
+            click.echo(f"   Could not read current shared master: {e.format_message()}")
 
 
 
