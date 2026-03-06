@@ -227,6 +227,10 @@ def unwrap_enc(data: bytes) -> Tuple[bytes, Optional[str], bool]:
 class Cfg:
     secrets_dir: Path
 
+    def __post_init__(self):
+        expanded = Path(self.secrets_dir).expanduser()
+        object.__setattr__(self, "secrets_dir", expanded)
+
     @property
     def identity_file(self) -> Path:
         return self.secrets_dir / MASTER_IDENTITY
@@ -261,7 +265,7 @@ def secret_path(cfg: Cfg, name: str) -> Path:
 
 @click.group(context_settings=dict(help_option_names=["-h", "--help"]))
 @click.option(
-    "--secrets-dir",
+    "--secrets-dir", '-d',
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=DEFAULT_SECRETS_DIR,
     show_default=True,
@@ -671,17 +675,39 @@ def cmd_dump_apply(cfg: Cfg, yes: bool) -> None:
 @cli.command("master")
 @click.pass_obj
 def cmd_masters(cfg: Cfg):
-    click.echo(f"""
-1. To generate SE master:
- - Use age SE plugin to generate: age-plugin-se keygen -o {cfg.secrets_dir}/{MASTER_IDENTITY}
-
-2. To create shared master key:
- - create {MASTER_AGE}: `age -r {age_recipient_from_identity(cfg.identity_file)} -o {cfg.secrets_dir}/{MASTER_AGE} <(openssl rand -base64 32)`
-
- Current shared master: {base64.b64encode(load_aes_key(cfg.secrets_dir)).decode()}
-
+    completed = False
+    identity_file = None
+    master_age_file = None
+    try:
+        identity_file = cfg.identity_file
+        if identity_file and os.path.exists(identity_file):
+            completed = True
+    except:
+        completed = False
+    finally:
+        click.echo(f"""
+    1. To generate SE master:
+     - Use age SE plugin to generate: age-plugin-se keygen -o {identity_file}
+       completed: {completed}
 """
     )
+    completed = False
+    try:
+        master_age_file = cfg.master_age_file
+        if master_age_file and os.path.exists(master_age_file):
+            completed = True
+    except:
+        completed = False
+    finally:
+        click.echo(f"""
+    2. To create shared master key:
+     - create {MASTER_AGE}: `age -r {age_recipient_from_identity(identity_file)} -o {master_age_file} <(openssl rand -base64 32)`
+       completed: {completed}
+"""
+)
+    if completed:
+        click.echo(f"     Current shared master: {base64.b64encode(load_aes_key(cfg.secrets_dir)).decode()}")
+
 
 
 @cli.command("pbcopy")
