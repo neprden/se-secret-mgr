@@ -18,7 +18,7 @@ import click
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
-NAME_RE = re.compile(r"^[A-Z0-9_]+$")
+NAME_RE = re.compile(r"^[A-Z][A-Za-z0-9_]+$")
 
 DEFAULT_SECRETS_DIR = Path.home() / ".secrets"
 MASTER_IDENTITY = "master.key"   # age identity (SE/TouchID protected)
