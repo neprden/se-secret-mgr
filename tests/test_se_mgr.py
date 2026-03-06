@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import subprocess
 
 import click
 from click.testing import CliRunner
@@ -183,3 +184,51 @@ def test_dump_apply_rejects_invalid_json(tmp_path: Path) -> None:
 
     assert result.exit_code != 0
     assert "Invalid JSON" in result.output
+
+
+def test_run_checked_command_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise_not_found(*_args, **_kwargs):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(se_mgr.subprocess, "run", _raise_not_found)
+
+    with pytest.raises(click.ClickException, match="Command not found: age"):
+        se_mgr.run_checked(["age", "--version"])
+
+
+def test_run_checked_called_process_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise_cpe(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(returncode=1, cmd=["age", "-d"], stderr=b"boom")
+
+    monkeypatch.setattr(se_mgr.subprocess, "run", _raise_cpe)
+
+    with pytest.raises(click.ClickException, match="Command failed: age -d"):
+        se_mgr.run_checked(["age", "-d"])
+
+
+def test_unwrap_enc_invalid_json_raises() -> None:
+    with pytest.raises(click.ClickException, match="Invalid .enc JSON"):
+        se_mgr.unwrap_enc(b"{invalid-json")
+
+
+def test_unwrap_enc_invalid_version_raises() -> None:
+    bad = b'{"v":999,"cipher_b64":"AA==","description":""}'
+    with pytest.raises(click.ClickException, match="Unsupported .enc JSON version"):
+        se_mgr.unwrap_enc(bad)
+
+
+def test_unwrap_enc_missing_cipher_b64_raises() -> None:
+    bad = b'{"v":1,"description":""}'
+    with pytest.raises(click.ClickException, match="missing cipher_b64"):
+        se_mgr.unwrap_enc(bad)
+
+
+def test_unwrap_enc_invalid_cipher_b64_raises() -> None:
+    bad = b'{"v":1,"cipher_b64":"***","description":""}'
+    with pytest.raises(click.ClickException, match="cipher_b64 is not valid base64"):
+        se_mgr.unwrap_enc(bad)
+
+
+def test_load_aes_key_missing_identity(tmp_path: Path) -> None:
+    with pytest.raises(click.ClickException, match="master.key not found"):
+        se_mgr.load_aes_key(tmp_path)

@@ -1,11 +1,16 @@
-.PHONY: install test coverage
+.PHONY: install install-dev test coverage
+
+VENV_PY := .venv/bin/python
 
 install:
 	python3 -m venv --system-site-packages .venv
-	.venv/bin/python -m pip install -e . --no-deps
+	$(VENV_PY) -m pip install -e . --no-deps
+
+install-dev: install
+	$(VENV_PY) -m pip install -e .[test]
 
 test:
-	python3 -m pytest
+	$(VENV_PY) -m pytest
 
-coverage:
-	python3 -m pytest --cov --cov-config=.coveragerc --cov-report=term-missing --cov-fail-under=35
+coverage: install-dev
+	$(VENV_PY) -m pytest --cov --cov-config=.coveragerc --cov-report=term-missing --cov-fail-under=35

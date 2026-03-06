@@ -155,6 +155,12 @@ Install project locally (creates `.venv`):
 make install
 ```
 
+Install dev/test dependencies:
+
+```bash
+make install-dev
+```
+
 Run unit tests:
 
 ```bash
@@ -167,8 +173,4 @@ Run coverage check (fails under 35%):
 make coverage
 ```
 
-Install test dependencies:
-
-```bash
-pip install -e .[test]
-```
+(`make coverage` depends on `make install-dev`.)
