@@ -148,3 +148,27 @@ python3 se-mgr.py test
 ```
 
 This uses temporary directories and does not touch real secrets.
+
+Install project locally (creates `.venv`):
+
+```bash
+make install
+```
+
+Run unit tests:
+
+```bash
+make test
+```
+
+Run coverage check (fails under 35%):
+
+```bash
+make coverage
+```
+
+Install test dependencies:
+
+```bash
+pip install -e .[test]
+```
