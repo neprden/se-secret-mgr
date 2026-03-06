@@ -291,8 +291,21 @@ def cli(ctx: click.Context, secrets_dir: Path) -> None:
     help="When overwriting an existing secret, preserve existing metadata (description). "
          "If not provided, you will be asked (only if there is something to preserve)."
 )
+@click.option(
+    "--from-file", "-f",
+    "from_file",
+    type=str,
+    default=None,
+    help="Read secret value from file path (use '-' for stdin). Supports multiline secrets."
+)
 @click.pass_obj
-def cmd_set(cfg: Cfg, name: str, desc: Optional[str], preserve_meta: Optional[bool]) -> None:
+def cmd_set(
+    cfg: Cfg,
+    name: str,
+    desc: Optional[str],
+    preserve_meta: Optional[bool],
+    from_file: Optional[str],
+) -> None:
     """Store secret NAME into NAME.enc (AES-256-GCM)."""
     ensure_setup(cfg)
 
@@ -324,10 +337,22 @@ def cmd_set(cfg: Cfg, name: str, desc: Optional[str], preserve_meta: Optional[bo
         else:
             preserve = preserve_meta
 
-    secret = click.prompt(f"Enter value for {name}", hide_input=True, confirmation_prompt=True)
+    if from_file is not None:
+        if from_file == "-":
+            secret = click.get_binary_stream("stdin").read()
+        else:
+            src = Path(from_file).expanduser()
+            if not src.exists():
+                raise click.ClickException(f"File not found: {src}")
+            if not src.is_file():
+                raise click.ClickException(f"Not a file: {src}")
+            secret = src.read_bytes()
+    else:
+        typed_secret = click.prompt(f"Enter value for {name}", hide_input=True, confirmation_prompt=True)
+        secret = typed_secret.encode("utf-8")
 
     key = load_aes_key(cfg.secrets_dir)
-    cipher_blob = encrypt_bytes(key, secret.encode("utf-8"))
+    cipher_blob = encrypt_bytes(key, secret)
 
     # - If preserving and user did NOT provide --desc => keep old_desc (may be "" or None)
     # - If user provided --desc => use it (can clear via --desc "")
@@ -874,6 +899,25 @@ def cmd_test(cfg: Cfg, keep_temp: bool, verbose: bool) -> None:
             if r_get.output != val:
                 raise RuntimeError("get output mismatch (expected exact secret value).")
 
+        def step_set_from_file_multiline():
+            c = f"TEST_C_{suffix}"
+            multiline = f"{val}\nline2\nline3"
+            secret_file = t1 / "multiline-secret.txt"
+            secret_file.write_text(multiline, encoding="utf-8")
+
+            r_set = invoke_in_dir(
+                t1,
+                ["set", c, "--from-file", str(secret_file), "--desc", "multiline", "--no-preserve-meta"],
+            )
+            if r_set.exit_code != 0:
+                raise RuntimeError(f"set --from-file failed:\n{r_set.output}")
+
+            r_get = invoke_in_dir(t1, ["get", c])
+            if r_get.exit_code != 0:
+                raise RuntimeError(f"get(multiline) failed:\n{r_get.output}")
+            if r_get.output != multiline:
+                raise RuntimeError("multiline secret mismatch after set --from-file.")
+
         def step_mv_and_verify():
             # rename A -> B
             r_mv = invoke_in_dir(t1, ["mv", a, b], input_text="y\n")  # y only matters if dst exists (usually no)
@@ -947,6 +991,7 @@ def cmd_test(cfg: Cfg, keep_temp: bool, verbose: bool) -> None:
         steps += [
             ("list", step_list_empty_or_ok),
             ("set/get", step_set_get),
+            ("set/get multiline from file", step_set_from_file_multiline),
             ("mv + verify", step_mv_and_verify),
             ("comment/export", step_comment_and_export),
             ("dump -> dump-apply (paired)", step_dump_apply_pair),
