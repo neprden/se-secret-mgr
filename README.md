@@ -29,10 +29,12 @@ It stores:
   - `cryptography`
   - `pyperclip` (optional, only for `pbcopy`)
 
-Install Python deps:
+Install:
 
 ```bash
-pip install click cryptography pyperclip
+pip install -e .
+# or
+make install
 ```
 
 ## Quick Start
@@ -67,8 +69,8 @@ age -r "$(grep -m1 '^# public key:' ~/.secrets/master.key | awk '{print $4}')" \
 ### 4. Store and read secrets
 
 ```bash
-python3 se-mgr.py set API_TOKEN
-python3 se-mgr.py get API_TOKEN
+se-mgr set API_TOKEN
+se-mgr get API_TOKEN
 ```
 
 ## Usage
@@ -76,8 +78,8 @@ python3 se-mgr.py get API_TOKEN
 Global options:
 
 ```bash
-python3 se-mgr.py --help
-python3 se-mgr.py --secrets-dir /path/to/secrets <command>
+se-mgr --help
+se-mgr --secrets-dir /path/to/secrets <command>
 ```
 
 Main commands:
@@ -103,13 +105,13 @@ Interactive prompt is intended for single-line values. For multiline values, use
 From file:
 
 ```bash
-python3 se-mgr.py set TLS_CERT --from-file ./cert.pem
+se-mgr set TLS_CERT --from-file ./cert.pem
 ```
 
 From stdin:
 
 ```bash
-cat cert.pem | python3 se-mgr.py set TLS_CERT --from-file -
+cat cert.pem | se-mgr set TLS_CERT --from-file -
 ```
 
 ## Description Metadata
@@ -117,19 +119,19 @@ cat cert.pem | python3 se-mgr.py set TLS_CERT --from-file -
 Set/update description:
 
 ```bash
-python3 se-mgr.py comment API_TOKEN "GitHub token for CI"
+se-mgr comment API_TOKEN "GitHub token for CI"
 ```
 
 Multiline description from stdin:
 
 ```bash
-cat desc.txt | python3 se-mgr.py comment API_TOKEN --stdin
+cat desc.txt | se-mgr comment API_TOKEN --stdin
 ```
 
 Show descriptions:
 
 ```bash
-python3 se-mgr.py list --long
+se-mgr list --long
 ```
 
 ## Security Notes
@@ -144,7 +146,7 @@ python3 se-mgr.py list --long
 Run internal self-test:
 
 ```bash
-python3 se-mgr.py test
+se-mgr test
 ```
 
 This uses temporary directories and does not touch real secrets.

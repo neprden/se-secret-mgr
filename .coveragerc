@@ -1,5 +1,7 @@
 [run]
-source = .
+source =
+    se_secret_mgr
+    se_mgr_cli.py
 omit =
     tests/*
     setup.py

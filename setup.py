@@ -8,7 +8,7 @@ README = Path(__file__).with_name("README.md").read_text(encoding="utf-8")
 
 setup(
     name="se-secret-mgr",
-    version="0.1.0",
+    version="0.2.0",
     description="Small CLI secret manager based on age + AES-256-GCM",
     long_description=README,
     long_description_content_type="text/markdown",
@@ -24,5 +24,11 @@ setup(
             "pytest-cov>=5",
         ],
     },
-    scripts=["se-mgr.py"],
+    packages=["se_secret_mgr"],
+    py_modules=["se_mgr_cli"],
+    entry_points={
+        "console_scripts": [
+            "se-mgr=se_mgr_cli:cli",
+        ],
+    },
 )
